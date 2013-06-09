@@ -20,7 +20,7 @@ except ImportError:
   print >> sys.stderr, "WARNING: `gevent` not found."
 
 
-RESPONSE = 'HTTP/1.0 200 Ok\n\nHello world!'
+RESPONSE = 'HTTP/1.0 200 Ok\n\n<html><body><h1>Hello world!</h1></body></html>'
 SLEEP = 1
 
 
