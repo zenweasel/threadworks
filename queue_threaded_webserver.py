@@ -6,41 +6,27 @@ import re
 import threading
 import Queue
 import time
+from pprint import pprint
 
 from StringIO import StringIO
 from wsgiref.util import FileWrapper
 from wsgiref.headers import Headers
 
 
-def get_url_path(path):
-    from urllib import quote
-    url = environ['wsgi.url_scheme']+'://'
-
-    if environ.get('HTTP_HOST'):
-        url += environ['HTTP_HOST']
-    else:
-        url += environ['SERVER_NAME']
-
-        if environ['wsgi.url_scheme'] == 'https':
-            if environ['SERVER_PORT'] != '443':
-               url += ':' + environ['SERVER_PORT']
-        else:
-            if environ['SERVER_PORT'] != '80':
-               url += ':' + environ['SERVER_PORT']
-
-    url += quote(environ.get('SCRIPT_NAME', ''))
-    url += quote(environ.get('PATH_INFO', ''))
-    if environ.get('QUERY_STRING'):
-        url += '?' + environ['QUERY_STRING']
-
-
-
 def weasel_application(environ, start_response):
     """Simplest possible application object"""
-    status = '200 OK'
+    print('Application Environ\n')
+    print(environ)
+    if environ.get('PATH_INFO') == '/lost':
+        status = '404 Not Found'
+    else:
+        status = '200 OK'
     response_headers = [('Content-type', 'text/html')]
     start_response(status, response_headers)
-    page = ['<html><head><head><body><h1>Hello World</h1></body></html>']
+    if status == '200 OK':
+        page = ['<html><head>', '<head><body>', '<h1>Hello World</h1>', '</body></html>']
+    else:
+        page = ['<html><head>', '<head><body>', '<h1>404 Not Found</h1>', '</body></html>']
     return page
 
 
@@ -52,6 +38,7 @@ class Producer(threading.Thread):
 
     def run(self):
         while True:
+
             item = self.in_queue.get()
             self.out_queue.put(item)
             self.in_queue.task_done()
@@ -70,6 +57,7 @@ class Consumer(threading.Thread):
             self.server.ResponseHandler(self.server, item)
             self.out_queue.task_done()
 
+
 class Request(object):
     
     def __init__(self):
@@ -79,11 +67,21 @@ class Request(object):
         self.cli = None
 
     def __repr__(self):
-        return u'%s - %s - %s - %s' % (self.method, self.path, self.headers, self.cli)
+        return u'%s - %s - %s' % (self.method, self.path, self.headers)
+
+
+class Response(object):
+
+    def __init__(self):
+        self.headers = dict()
+        self.status = None
+        self.content = None
+
 
 def make_my_server(host, port, application):
     qcs = QueueConsumerServer(host, port, application)
     return qcs
+
 
 class QueueConsumerServer(object):
 
@@ -99,13 +97,13 @@ class QueueConsumerServer(object):
         self.socket = socket.socket()
         self.socket.bind((self.host, self.port))
         environ = dict()
-        environ['wsgi.input']        = self.socket
-        environ['wsgi.errors']       = sys.stderr
-        environ['wsgi.version']      = (1, 0)
-        environ['wsgi.multithread']  = True
+        environ['wsgi.input'] = self.socket
+        environ['wsgi.errors'] = sys.stderr
+        environ['wsgi.version'] = (1, 0)
+        environ['wsgi.multithread'] = True
         environ['wsgi.multiprocess'] = False
-        environ['wsgi.run_once']     = True
-        environ['REQUEST_METHOD']    = ""
+        environ['wsgi.run_once'] = True
+        environ['REQUEST_METHOD'] = ""
         environ['SCRIPT_NAME'] = ""
         environ['PATH_INFO'] = ""
         environ['QUERY_STRING'] = ""
@@ -119,8 +117,6 @@ class QueueConsumerServer(object):
         else:
             environ['wsgi.url_scheme'] = 'http'
         self.environ = environ
-        headers_set = []
-        headers_sent = []
         for i in xrange(3):
             thr = Producer(self.iq, self.oq)
             thr.daemon = True
@@ -131,71 +127,76 @@ class QueueConsumerServer(object):
             thr.daemon = True
             thr.start()
 
-    def serve_forever(self):
-        self.socket.listen(1)
-        while True:
-            cli, addr = self.socket.accept()
-            self.handle_request(cli, addr)
-
-
     class ResponseHandler(object):
 
         def __init__(self, server, item):
-            print(server.environ)
+            environ = server.environ
+            environ['REQUEST_METHOD'] = item.method
+            environ['SERVER_NAME'] = item.headers.get('SERVER_NAME')
+            environ['PATH_INFO'] = item.path
+            self.response = Response()
             self.item = item
             self.headers_set = False
             self.headers_sent = False
-            self.results = server.application(server.environ, self)
+            self.results = server.application(environ, self)
             self.respond()
 
-
         def __call__(self, status, response_headers, exc_info=None):
-            if not self.headers_sent:
-                 # Before the first output, send the stored headers
-                 #status, response_headers = headers_sent[:] = headers_set
-                 self.item.cli.send('Status: %s\r\n' % status)
-                 for header in response_headers:
-                     self.item.cli.send('%s: %s\r\n' % header)
-                 self.item.cli.send('\r\n')
+            self.response.status = 'HTTP/1.1 %s' % status
+            for header in response_headers:
+                self.response.headers[header[0]] = header[1]
 
         def respond(self):
+            if not self.headers_sent:
+                print('sending headers')
+                # Before the first output, send the stored headers
+                self.headers_sent = True
+                self.item.cli.send(self.response.status)
+                self.item.cli.send('\r\n')
+                for key, value in self.response.headers.items():
+                    self.item.cli.send('%s: %s' % (key, value))
+                    self.item.cli.send('\r\n')
+                self.item.cli.send('\r\n')
+
             if hasattr(self, 'results'):
+
                 for result in self.results:
+                    print('sending results: %s' % result)
                     self.item.cli.send(result)
+                    if hasattr(result, 'close'):
+                        result.close()
                 self.item.cli.shutdown(socket.SHUT_WR)
             else:
                 print('huh?')
-
 
     def _parse_methods(self, header_line):
         url_data = header_line.split(' ')
         method = url_data[0].strip(' ')
         path = url_data[1].strip(' ')
         http_version = url_data[2].strip(' ')
-        print(method, path, http_version)
-        # if rdata[:3].lower() == 'get':
-        #     self.environ['REQUEST_METHOD'] = "GET"
-        # if rdata[:4].lower() == "post":
-        #     self.environ['REQUEST_METHOD'] = "POST"
 
+        return method, path
 
-
-    def parse_request_data(self, data):
-        
+    def parse_request_data(self, data, req):
+        headers = dict()
         request_lines = data.splitlines()
         for x, rdata in enumerate(request_lines):
-            print('rdata %s: %s' % (x, rdata))
+            print(rdata)
+            header_key = rdata.split(':')
+            if len(header_key) > 1:
+                headers[header_key[0]] = header_key[1].strip(' ')
             for method in self.methods_allowed:
                 if method in rdata[:5].lower():
-                    self._parse_methods(rdata)
+                    req.method, req.path = self._parse_methods(rdata)
+                    headers['REQUEST_METHOD'] = method.upper()
             if rdata[:4].lower() == 'host':
                 if len(rdata[5:].split(':')) == 2:
                     host_port_split = rdata[5:].split(':')
-                    self.environ['SERVER_NAME'] = host_port_split[0].strip(' ')
-                    self.environ['SERVER_PORT'] = host_port_split[1].strip(' ')
+                    headers['SERVER_NAME'] = host_port_split[0].strip(' ')
+                    headers['SERVER_PORT'] = host_port_split[1].strip(' ')
                 else:
-                    self.environ['SERVER_NAME'] = rdata[5:].split(':')
-        print(self.environ)
+                    headers['SERVER_NAME'] = rdata[5:].split(':')
+        return headers
 
     def handle_request(self):
         self.socket.listen(1)
@@ -203,16 +204,19 @@ class QueueConsumerServer(object):
             while True:
                 cli, addr = self.socket.accept()
                 data = cli.recv(1024)
-                request_data = self.parse_request_data(data)
-                req.path = request_data[1]
+                req = Request()
+                req.headers = self.parse_request_data(data, req)
                 req.cli = cli
+                req.environ = self.environ
+                pprint(req)
                 self.iq.put(req)
-                return
+
         except Exception, ex:
-            print 'e', ex,
+            print 'EXCEPTION', ex,
             sys.exit(1)
         finally:
             sys.stdout.flush()
+            sys.stderr.flush()
             self.socket.close()
 
 if __name__ == '__main__':
