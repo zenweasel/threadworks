@@ -9,7 +9,7 @@ def simple_app(environ, start_response):
     setup_testing_defaults(environ)
 
     status = '200 OK'
-    headers = [('Content-type', 'text/plain')]
+    headers = [('Content-type', 'text/html')]
 
     start_response(status, headers)
 

@@ -11,6 +11,7 @@ from pprint import pprint
 from StringIO import StringIO
 from wsgiref.util import FileWrapper
 from wsgiref.headers import Headers
+from termcolor import colored, cprint
 
 
 def weasel_application(environ, start_response):
@@ -59,7 +60,7 @@ class Consumer(threading.Thread):
 
 
 class Request(object):
-    
+
     def __init__(self):
         self.method = None
         self.path = None
@@ -95,7 +96,13 @@ class QueueConsumerServer(object):
         self.oq = Queue.Queue()
 
         self.socket = socket.socket()
-        self.socket.bind((self.host, self.port))
+        try:
+            self.socket.bind((self.host, self.port))
+        except IOError, e:
+            print(e)
+            print(dir(self.socket))
+            self.socket.shutdown
+            sys.exit(1)
         environ = dict()
         environ['wsgi.input'] = self.socket
         environ['wsgi.errors'] = sys.stderr
@@ -117,14 +124,15 @@ class QueueConsumerServer(object):
         else:
             environ['wsgi.url_scheme'] = 'http'
         self.environ = environ
+        print('spinning up 3 threads for consumer and producer')
         for i in xrange(3):
             thr = Producer(self.iq, self.oq)
-            thr.daemon = True
+            thr.daemon = False
             thr.start()
 
         for i in xrange(3):
             thr = Consumer(self.oq, self)
-            thr.daemon = True
+            thr.daemon = False
             thr.start()
 
     class ResponseHandler(object):
@@ -208,6 +216,7 @@ class QueueConsumerServer(object):
                 req.headers = self.parse_request_data(data, req)
                 req.cli = cli
                 req.environ = self.environ
+                print('Request:\n')
                 pprint(req)
                 self.iq.put(req)
 
@@ -220,10 +229,11 @@ class QueueConsumerServer(object):
             self.socket.close()
 
 if __name__ == '__main__':
-    httpd = make_my_server('', 8000, weasel_application)
+    httpd = make_my_server('', 5001, weasel_application)
+    print('starting server....')
     httpd.handle_request()
 
 
 
-    
+
 
